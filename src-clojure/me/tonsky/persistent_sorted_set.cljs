@@ -400,7 +400,7 @@
                     (new-node (arrays/aget ks 1)
                               (arrays/aget ps 1)
                               (arrays/aget as 1)
-                              {:address (.-_address next)}))))
+                              (.-_address next)))))
 
   (node-child [_this idx ^IStorage storage]
     (when-not (= -1 idx)
@@ -426,7 +426,7 @@
     (ensure-addresses! this (count children))
     (let [idx   (binary-search-l cmp keys (- (arrays/alength keys) 2) key)
           child (node-child this idx storage)
-          nodes (node-conj child cmp key storage)]
+          nodes (when child (node-conj child cmp key storage))]
       (when nodes
         (let [new-keys     (check-n-splice cmp keys     idx (inc idx) (arrays/amap node-lim-key nodes))
               new-children (splice             children idx (inc idx) nodes)
@@ -470,7 +470,7 @@
                       root? left right storage))))))))
 
 (declare Leaf)
-(defn- new-leaf
+(defn new-leaf
   ([keys]
    (new-leaf keys nil))
   ([keys address]
@@ -719,7 +719,8 @@
          (path-set path level last-idx)
          (dec level)))
       ;; leaf
-      (path-set path 0 (dec (arrays/alength (.-keys node)))))))
+      (when node
+        (path-set path 0 (dec (arrays/alength (.-keys node))))))))
 
 (defn- next-path
   "Returns path representing next item after `path` in natural traversal order.
@@ -1056,19 +1057,20 @@
     (loop [node  (-ensure-root-node set)
            path  empty-path
            level (.-shift set)]
-      (let [keys-l (node-len node)]
-        (if (== 0 level)
-          (let [keys (.-keys node)
-                idx  (binary-search-l comparator keys (dec keys-l) key)]
-            (if (== keys-l idx)
-              nil
-              (path-set path 0 idx)))
-          (let [keys (.-keys node)
-                idx  (binary-search-l comparator keys (- keys-l 2) key)]
-            (recur
-             (child node idx (.-storage set))
-             (path-set path level idx)
-             (dec level))))))))
+      (when node
+        (let [keys-l (node-len node)]
+          (if (== 0 level)
+            (let [keys (.-keys node)
+                  idx  (binary-search-l comparator keys (dec keys-l) key)]
+              (if (== keys-l idx)
+                nil
+                (path-set path 0 idx)))
+            (let [keys (.-keys node)
+                  idx  (binary-search-l comparator keys (- keys-l 2) key)]
+              (recur
+               (child node idx (.-storage set))
+               (path-set path level idx)
+               (dec level)))))))))
 
 (defn- -rseek*
   "Returns path to the first element that is > key.
@@ -1080,19 +1082,20 @@
     (loop [node  (-ensure-root-node set)
            path  empty-path
            level (.-shift set)]
-      (let [keys-l (node-len node)]
-        (if (== 0 level)
-          (let [keys (.-keys node)
-                idx  (binary-search-r comparator keys (dec keys-l) key)
-                res  (path-set path 0 idx)]
-            res)
-          (let [keys (.-keys node)
-                idx  (binary-search-r comparator keys (- keys-l 2) key)
-                res  (path-set path level idx)]
-            (recur
-             (child node idx (.-storage set))
-             res
-             (dec level))))))))
+      (when node
+        (let [keys-l (node-len node)]
+          (if (== 0 level)
+            (let [keys (.-keys node)
+                  idx  (binary-search-r comparator keys (dec keys-l) key)
+                  res  (path-set path 0 idx)]
+              res)
+            (let [keys (.-keys node)
+                  idx  (binary-search-r comparator keys (- keys-l 2) key)
+                  res  (path-set path level idx)]
+              (recur
+               (child node idx (.-storage set))
+               res
+               (dec level)))))))))
 
 (defn -slice [^BTSet set key-from key-to comparator]
   (when-some [path (-seek* set key-from comparator)]
