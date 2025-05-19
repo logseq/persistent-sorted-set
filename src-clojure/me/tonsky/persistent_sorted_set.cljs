@@ -380,6 +380,8 @@
                     (count (.-children next)))))
     (ensure-addresses! this (count children))
     (ensure-addresses! next (count (.-children next)))
+    (when-let [next-address (.-_address next)]
+      (protocol/delete storage [next-address]))
     (new-node (arrays/aconcat keys (.-keys next))
               (arrays/aconcat children (.-children next))
               (arrays/aconcat _addresses (.-_addresses next))
