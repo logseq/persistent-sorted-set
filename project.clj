@@ -1,4 +1,4 @@
-(defproject org.clojars.tiensonqin/persistent-sorted-set "0.0.7"
+(defproject org.clojars.tiensonqin/persistent-sorted-set "0.0.9"
   :description "Fast B-tree based persistent sorted set for Clojure/Script"
   :license {:name "MIT"}
   :url "https://github.com/logseq/persistent-sorted-set"
