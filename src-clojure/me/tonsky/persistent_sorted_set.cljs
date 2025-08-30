@@ -326,11 +326,23 @@
                       (arrays/make-array size))]
       (set! (.-_addresses node) addresses))))
 
-(defn- set-address!
-  [addresses idx address]
-  (arrays/aset addresses idx address))
-
 (declare Node)
+(defn- make-reference
+  [o]
+  (when o (js/WeakRef. o)))
+
+(defn- read-reference
+  [o]
+  (if (instance? js/WeakRef o)
+    (.deref o)
+    o))
+
+(defn- set-address!
+  [children addresses idx address]
+  (when (and addresses address)
+    (when (instance? Node (aget children idx))
+      (aset children idx (make-reference (aget children idx)))))
+  (arrays/aset addresses idx address))
 
 (defn new-node
   ([keys children addresses]
@@ -345,22 +357,34 @@
                      addresses)]
      (Node. keys children addresses address dirty?))))
 
+(defn indexed
+  "Returns an ordered, lazy sequence of vectors `[index item]`, where item is a
+  value in coll, and index its position starting from zero. Returns a transducer
+  when no collection is provided."
+  ([]
+   (fn [rf]
+     (let [i (volatile! -1)]
+       (fn
+         ([] (rf))
+         ([result] (rf result))
+         ([result x]
+          (rf result [(vswap! i inc) x]))))))
+  ([coll]
+   (map-indexed vector coll)))
+
 (deftype Node [keys children ^:mutable _addresses ^:mutable _address ^:mutable _dirty]
   IStore
   (store-aux [this ^IStorage storage]
     (ensure-addresses! this (count children))
 
     ;; Children first
-    (dorun
-     (map-indexed
-      (fn [idx addr]
-        (let [^object child (aget children idx)]
-          (when (and child (or (nil? addr) (.-_dirty child)))
-            (assert (not (nil? children)))
-            (assert (not (nil? child)))
-            (let [child-address (store-aux child storage)]
-              (set-address! _addresses idx child-address)))))
-      _addresses))
+    (doseq [[idx addr] (indexed _addresses)]
+      (let [^object child (aget children idx)]
+        (when (and child (or (nil? addr) (.-_dirty child)))
+          (assert (not (nil? children)))
+          (assert (not (nil? child)))
+          (let [child-address (store-aux child storage)]
+            (set-address! children _addresses idx child-address)))))
 
     (let [new-address (protocol/store storage this _address)]
       (set! _dirty false)
@@ -408,14 +432,17 @@
       (assert (or (and (seq children) (arrays/aget children idx)) ; child exists
                   (and (seq _addresses) (arrays/aget _addresses idx)))
               (str "Neither child or address exists" {:address _address :keys keys :addresses _addresses :idx idx :children children}))
-      (let [child (arrays/aget children idx)
+      (let [child-ref (arrays/aget children idx)
+            child (when child-ref (read-reference child-ref))
             address (when _addresses (arrays/aget _addresses idx))]
-        (if-not child
+        (if child
+          (do
+            (when (and storage address)
+              (protocol/accessed storage address))
+            child)
           (let [child (protocol/restore storage address)]
-            (set-child! children idx child))
-          (when (and storage address)
-            (protocol/accessed storage address)))
-        (arrays/aget children idx))))
+            (set-child! children idx (make-reference child))
+            child)))))
 
   (node-lookup [this cmp key storage]
     (let [idx (lookup-range cmp keys key)]
@@ -561,15 +588,15 @@
 (defprotocol IRoot
   (-ensure-root-node [_]))
 
-(deftype BTSet [^:mutable storage ^:mutable root shift cnt comparator meta ^:mutable _hash ^:mutable _address]
+(deftype BTSet [^:mutable storage ^:mutable _root shift cnt comparator meta ^:mutable _hash ^:mutable _address]
   Object
   (toString [this] (pr-str* this))
 
   ICloneable
-  (-clone [_] (BTSet. storage root shift cnt comparator meta _hash _address))
+  (-clone [_] (BTSet. storage _root shift cnt comparator meta _hash _address))
 
   IWithMeta
-  (-with-meta [_ new-meta] (BTSet. storage root shift cnt comparator new-meta _hash _address))
+  (-with-meta [_ new-meta] (BTSet. storage _root shift cnt comparator new-meta _hash _address))
 
   IMeta
   (-meta [_] meta)
@@ -595,29 +622,30 @@
 
   IRoot
   (-ensure-root-node [_this]
-    (or root
+    (or (read-reference _root)
         (when _address
           (let [node (protocol/restore storage _address)]
-            (set! root node)
+            (set! _root (make-reference node))
             node))))
 
   IStore
   (store-aux [this storage*]
     (when (nil? storage)
       (set! storage storage*))
-    (-ensure-root-node this)
-    (when (nil? _address)
-      (assert (some? storage) "storage couldn't be nil")
-      (set! _address (store-aux root storage)))
+    (let [root (-ensure-root-node this)]
+      (when (nil? _address)
+        (assert (some? storage) "storage couldn't be nil")
+        (set! _address (store-aux root storage))
+        (set! _root (make-reference root))))
     _address)
 
   ILookup
   (-lookup [this k]
     (-ensure-root-node this)
-    (node-lookup root comparator k storage))
+    (node-lookup (-ensure-root-node this) comparator k storage))
   (-lookup [this k not-found]
     (-ensure-root-node this)
-    (or (node-lookup root comparator k storage) not-found))
+    (or (node-lookup (-ensure-root-node this) comparator k storage) not-found))
 
   ISeqable
   (-seq [this] (btset-iter this))
@@ -712,8 +740,7 @@
     (if (pos? level)
       ;; inner node
       (let [last-idx   (dec (arrays/alength (.-children node)))
-            node-child (or (arrays/alast (.-children node))
-                           (child node last-idx storage))]
+            node-child (child node last-idx storage)]
         (recur
          node-child
          (path-set path level last-idx)
